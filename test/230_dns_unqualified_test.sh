@@ -26,4 +26,8 @@ check c2
 check c3
 check "$container"
 
+# check that unqualified names are automatically qualified when looking up
+weave_on $HOST1 dns-add $C2 c2 -h name1.$DOMAIN
+assert_dns_a_record $HOST1 c2 name1 $C2 name1.$DOMAIN
+
 end_suite
