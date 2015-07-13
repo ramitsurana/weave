@@ -55,3 +55,21 @@ func inspectContainerInPath(client *docker.Client, path string) (*docker.Contain
 	}
 	return container, err
 }
+
+// Call FindSubmatch and return a map from named groups to submatches
+// (Golang's regexp package doesn't provide a way to do it directly)
+func findStringNamedSubmatch(re *regexp.Regexp, s string) map[string]string {
+	namedSubmatches := make(map[string]string)
+
+	submatches := re.FindStringSubmatch(s)
+	groupNames := re.SubexpNames()
+
+	for i, submatch := range submatches {
+		name := groupNames[i]
+		if len(name) > 0 {
+			namedSubmatches[name] = submatch
+		}
+	}
+
+	return namedSubmatches
+}

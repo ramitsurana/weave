@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -15,20 +16,25 @@ import (
 )
 
 const (
-	defaultCaFile   = "ca.pem"
-	defaultKeyFile  = "key.pem"
-	defaultCertFile = "cert.pem"
-	dockerSock      = "/var/run/docker.sock"
-	dockerSockUnix  = "unix://" + dockerSock
+	defaultCaFile               = "ca.pem"
+	defaultKeyFile              = "key.pem"
+	defaultCertFile             = "cert.pem"
+	dockerSock                  = "/var/run/docker.sock"
+	dockerSockUnix              = "unix://" + dockerSock
+	substitutionPatternName     = "pattern"
+	substitutionReplacementName = "replacement"
 )
 
 var (
-	containerCreateRegexp = regexp.MustCompile("^(/v[0-9\\.]*)?/containers/create$")
-	containerStartRegexp  = regexp.MustCompile("^(/v[0-9\\.]*)?/containers/[^/]*/(re)?start$")
-	execCreateRegexp      = regexp.MustCompile("^(/v[0-9\\.]*)?/containers/[^/]*/exec$")
+	containerCreateRegexp = regexp.MustCompile(`^(/v[0-9\.]*)?/containers/create$`)
+	containerStartRegexp  = regexp.MustCompile(`^(/v[0-9\.]*)?/containers/[^/]*/(re)?start$`)
+	execCreateRegexp      = regexp.MustCompile(`^(/v[0-9\.]*)?/containers/[^/]*/exec$`)
+	substitutionRegexp    = regexp.MustCompile(`^/(?P<` + substitutionPatternName + `>(\\/|[^/])*)/(?P<` + substitutionReplacementName + `>(\\/|[^/])*)/$`)
+	escapedSlashRegexp    = regexp.MustCompile(`\\/`)
 )
 
 type Config struct {
+	Hostname       string
 	ListenAddrs    []string
 	NoDefaultIPAM  bool
 	NoRewriteHosts bool
@@ -40,8 +46,10 @@ type Config struct {
 
 type Proxy struct {
 	Config
-	client         *docker.Client
-	dockerBridgeIP string
+	client              *docker.Client
+	dockerBridgeIP      string
+	hostnamePattern     *regexp.Regexp
+	hostnameReplacement string
 }
 
 func NewProxy(c Config) (*Proxy, error) {
@@ -63,6 +71,11 @@ func NewProxy(c Config) (*Proxy, error) {
 			return nil, fmt.Errorf(string(stderr))
 		}
 		p.dockerBridgeIP = string(dockerBridgeIP)
+	}
+
+	p.hostnamePattern, p.hostnameReplacement, err = parseHostname(c.Hostname)
+	if err != nil {
+		return nil, err
 	}
 
 	return p, nil
@@ -117,6 +130,31 @@ func (proxy *Proxy) ListenAndServe() {
 			Log.Fatalf("Serve failed: %s", err)
 		}
 	}
+}
+
+func unescapeBackSlashes(src string) string {
+	return escapedSlashRegexp.ReplaceAllString(src, "/")
+}
+
+func parseHostname(hostname string) (*regexp.Regexp, string, error) {
+	namedSubmatches := findStringNamedSubmatch(substitutionRegexp, hostname)
+	if len(namedSubmatches) < 1 {
+		errStr := fmt.Sprintf("Incorrect hostname expression: %s", hostname)
+		return nil, "", errors.New(errStr)
+	}
+
+	escapedPattern := namedSubmatches[substitutionPatternName]
+	escapedReplacement := namedSubmatches[substitutionReplacementName]
+	unescapedPattern := unescapeBackSlashes(escapedPattern)
+	unescapedReplacement := unescapeBackSlashes(escapedReplacement)
+
+	patternRegexp, err := regexp.Compile(unescapedPattern)
+	if err != nil {
+		errStr := fmt.Sprintf("Incorrect hostname pattern '%s': %s", escapedPattern, err.Error())
+		return nil, "", errors.New(errStr)
+	}
+
+	return patternRegexp, unescapedReplacement, nil
 }
 
 func copyOwnerAndPermissions(from, to string) error {
